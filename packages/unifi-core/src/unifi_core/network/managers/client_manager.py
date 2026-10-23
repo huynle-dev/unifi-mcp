@@ -1,6 +1,7 @@
+import ipaddress
 import logging
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from aiounifi.models.api import ApiRequest
 from aiounifi.models.client import Client
@@ -38,6 +39,10 @@ class FixedApNotFoundError(UniFiOperationError):
 
 class FixedApOperationError(UniFiOperationError):
     """Identifier-free fixed-AP operation or readback failure."""
+
+
+class FixedIpNetworkError(ValueError):
+    """A fixed IP cannot be matched to a configured network (UniFi requires network_id)."""
 
 
 class ClientManager:
@@ -509,16 +514,24 @@ class ClientManager:
         fixed_ip: Optional[str] = None,
         local_dns_record_enabled: Optional[bool] = None,
         local_dns_record: Optional[str] = None,
+        network_id: Optional[str] = None,
     ) -> bool:
         """Set fixed IP and/or local DNS record for a client.
 
         Uses the UniFi REST API endpoint PUT /rest/user/{client_id}.
         Local DNS records require UniFi Network 7.2+.
 
+        The controller rejects a fixed IP without the network it belongs to
+        (``api.err.InvalidNetworkId``), so enabling a fixed IP always sends
+        ``network_id``: the given one (validated), else the configured network
+        whose subnet contains the IP.
+
         Args:
             client_mac: MAC address of the client to update.
             use_fixedip: Enable (True) or disable (False) fixed IP.
-            fixed_ip: The fixed IP address to assign (required if use_fixedip=True).
+            fixed_ip: The fixed IP address to assign. When enabling without it,
+                the client's existing fixed IP is reused.
+            network_id: Network ``_id`` for the fixed IP; inferred when omitted.
             local_dns_record_enabled: Enable (True) or disable (False) local DNS.
             local_dns_record: The DNS hostname to assign (e.g., "mydevice.local").
 
@@ -536,6 +549,16 @@ class ClientManager:
                 return False
 
             client_id = client_raw["_id"]
+
+            enabling_fixed_ip = use_fixedip is True or (use_fixedip is None and fixed_ip is not None)
+            fixed_ip_network: Optional[Dict[str, Any]] = None
+            if enabling_fixed_ip:
+                target_ip = fixed_ip or client_raw.get("fixed_ip")
+                if not target_ip:
+                    raise FixedIpNetworkError("fixed_ip is required to enable a fixed IP for this client")
+                fixed_ip = target_ip
+                # Resolve before any write so a bad network leaves the client untouched.
+                fixed_ip_network = await self.resolve_fixed_ip_network(target_ip, network_id=network_id)
 
             # If client is not "noted" (known), mark it first to enable IP config
             if not client_raw.get("noted"):
@@ -566,6 +589,8 @@ class ClientManager:
                 # If only fixed_ip provided, assume enabling
                 payload["use_fixedip"] = True
                 payload["fixed_ip"] = fixed_ip
+            if fixed_ip_network is not None:
+                payload["network_id"] = fixed_ip_network["network_id"]
 
             if local_dns_record_enabled is not None:
                 payload["local_dns_record_enabled"] = local_dns_record_enabled
@@ -594,6 +619,65 @@ class ClientManager:
         except Exception as e:
             logger.error("Error setting IP settings for [redacted]: %s", type(e).__name__)
             raise
+
+    async def resolve_fixed_ip_network(self, fixed_ip: str, network_id: Optional[str] = None) -> Dict[str, Any]:
+        """Return the configured network a fixed IP belongs to.
+
+        With ``network_id`` the network must exist and its subnet must contain
+        ``fixed_ip``; without it, exactly one configured network must contain it.
+
+        Returns:
+            ``{"network_id", "network_name", "ip_subnet"}`` of the matched network.
+
+        Raises:
+            FixedIpNetworkError: invalid IP, unknown network_id, subnet mismatch,
+                or no/ambiguous match.
+        """
+        try:
+            address = ipaddress.IPv4Address(str(fixed_ip).strip())
+        except ValueError:
+            raise FixedIpNetworkError(f"fixed_ip '{fixed_ip}' is not a valid IPv4 address") from None
+
+        response = await self._connection.request(ApiRequest(method="get", path="/rest/networkconf"))
+        if isinstance(response, dict) and isinstance(response.get("data"), list):
+            networks = response["data"]
+        elif isinstance(response, list):
+            networks = response
+        else:
+            raise FixedIpNetworkError("Controller returned an invalid network list; pass network_id explicitly")
+
+        candidates = []
+        for net in networks:
+            if not isinstance(net, dict) or not net.get("_id") or not net.get("ip_subnet"):
+                continue
+            try:
+                subnet = ipaddress.ip_interface(str(net["ip_subnet"]).strip()).network
+            except ValueError:
+                continue
+            candidates.append((net, subnet))
+
+        def _summary(net: Dict[str, Any]) -> Dict[str, Any]:
+            return {"network_id": net["_id"], "network_name": net.get("name"), "ip_subnet": net["ip_subnet"]}
+
+        if network_id is not None:
+            for net, subnet in candidates:
+                if net["_id"] == network_id:
+                    if address not in subnet:
+                        raise FixedIpNetworkError(
+                            f"fixed_ip {address} is not inside network '{net.get('name')}' ({subnet})"
+                        )
+                    return _summary(net)
+            raise FixedIpNetworkError(f"network_id '{network_id}' not found among networks with a subnet")
+
+        matches = [net for net, subnet in candidates if address in subnet]
+        if not matches:
+            raise FixedIpNetworkError(
+                f"No configured network contains {address}; use an IP inside a network subnet or pass network_id"
+            )
+        if len(matches) > 1:
+            names = ", ".join(f"{net.get('name')} ({net['_id']})" for net in matches)
+            raise FixedIpNetworkError(f"{address} matches several networks ({names}); pass network_id")
+        return _summary(matches[0])
 
     @staticmethod
     def _is_access_point(raw: dict[str, Any]) -> bool:

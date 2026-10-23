@@ -209,6 +209,19 @@ class TestSetClientIpSettingsInput:
         assert m.fixed_ip is None
         assert m.local_dns_record_enabled is None
         assert m.local_dns_record is None
+        assert m.network_id is None
+
+    def test_network_id_with_fixed_ip(self):
+        m = SetClientIpSettingsInput(mac_address="AA:BB:CC:DD:EE:FF", fixed_ip="192.168.1.50", network_id="abc123")
+        assert m.network_id == "abc123"
+
+    def test_network_id_rejected_when_disabling(self):
+        with pytest.raises(ValidationError, match="network_id"):
+            SetClientIpSettingsInput(mac_address="AA:BB:CC:DD:EE:FF", use_fixedip=False, network_id="abc123")
+
+    def test_network_id_rejected_without_fixed_ip_change(self):
+        with pytest.raises(ValidationError, match="network_id"):
+            SetClientIpSettingsInput(mac_address="AA:BB:CC:DD:EE:FF", local_dns_record="x.local", network_id="abc")
 
     def test_valid_fixed_ip_construction(self):
         m = SetClientIpSettingsInput(

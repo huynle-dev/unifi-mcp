@@ -16,6 +16,7 @@ from unifi_core.network.managers.client_manager import (
     FixedApNotFoundError,
     FixedApOperationError,
     FixedApValidationError,
+    FixedIpNetworkError,
 )
 from unifi_core.network.models._actions import (
     AuthorizeGuestInput,
@@ -713,7 +714,9 @@ Allows configuring:
 - Fixed IP: Assign a static IP address to a client (DHCP reservation)
 - Local DNS: Create a local DNS hostname for the client (UniFi Network 7.2+)
 
-Either setting can be enabled/disabled independently.""",
+Either setting can be enabled/disabled independently. A fixed IP is always stored with the
+network it belongs to: pass network_id (from unifi_list_networks) or let it be inferred from the
+network whose subnet contains fixed_ip. The preview shows the resolved network.""",
     permission_category="clients",
     permission_action="update",
 )
@@ -731,6 +734,15 @@ async def set_client_ip_settings(
     fixed_ip: Annotated[
         Optional[str],
         Field(description="Static IP address to assign (e.g., '192.168.1.50'). Only used when use_fixedip is true"),
+    ] = None,
+    network_id: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Network _id (from unifi_list_networks) the fixed IP belongs to. Only used when enabling a fixed IP; "
+                "when omitted, the network whose subnet contains fixed_ip is used"
+            )
+        ),
     ] = None,
     local_dns_record_enabled: Annotated[
         Optional[bool],
@@ -753,6 +765,7 @@ async def set_client_ip_settings(
             mac_address=mac_address,
             use_fixedip=use_fixedip,
             fixed_ip=fixed_ip,
+            network_id=network_id,
             local_dns_record_enabled=local_dns_record_enabled,
             local_dns_record=local_dns_record,
         )
@@ -778,12 +791,28 @@ async def set_client_ip_settings(
         client = client_obj.raw if hasattr(client_obj, "raw") else client_obj
         client_name = client.get("name") or client.get("hostname", "Unknown")
 
+        network: Optional[Dict[str, Any]] = None
+        enabling_fixed_ip = use_fixedip is True or (use_fixedip is None and fixed_ip is not None)
+        if enabling_fixed_ip:
+            target_ip = fixed_ip or client.get("fixed_ip")
+            if not target_ip:
+                return {
+                    "success": False,
+                    "error": f"fixed_ip is required to enable a fixed IP for client {mac_address}.",
+                }
+            try:
+                network = await client_manager.resolve_fixed_ip_network(target_ip, network_id=network_id)
+            except FixedIpNetworkError as e:
+                return {"success": False, "error": f"Cannot set fixed IP for client {mac_address}: {e}"}
+
         # Return preview when confirm=false
         if not confirm:
             # Build current state from the client object
             current_state = {
                 "use_fixedip": client.get("use_fixedip", False),
                 "fixed_ip": client.get("fixed_ip"),
+                "network_id": client.get("network_id"),
+                "network_name": client.get("network"),
                 "local_dns_record_enabled": client.get("local_dns_record_enabled", False),
                 "local_dns_record": client.get("local_dns_record"),
             }
@@ -794,6 +823,9 @@ async def set_client_ip_settings(
                 updates["use_fixedip"] = use_fixedip
             if fixed_ip is not None:
                 updates["fixed_ip"] = fixed_ip
+            if network is not None:
+                updates["network_id"] = network["network_id"]
+                updates["network_name"] = network["network_name"]
             if local_dns_record_enabled is not None:
                 updates["local_dns_record_enabled"] = local_dns_record_enabled
             if local_dns_record is not None:
@@ -811,6 +843,7 @@ async def set_client_ip_settings(
             client_mac=mac_address,
             use_fixedip=use_fixedip,
             fixed_ip=fixed_ip,
+            network_id=network["network_id"] if network is not None else None,
             local_dns_record_enabled=local_dns_record_enabled,
             local_dns_record=local_dns_record,
         )
@@ -823,6 +856,8 @@ async def set_client_ip_settings(
                     for k, v in {
                         "use_fixedip": use_fixedip,
                         "fixed_ip": fixed_ip,
+                        "network_id": network["network_id"] if network is not None else None,
+                        "network_name": network["network_name"] if network is not None else None,
                         "local_dns_record_enabled": local_dns_record_enabled,
                         "local_dns_record": local_dns_record,
                     }.items()

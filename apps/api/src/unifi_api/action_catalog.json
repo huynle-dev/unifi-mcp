@@ -6416,6 +6416,10 @@
             "description": "MAC address of the client to configure, in format AA:BB:CC:DD:EE:FF (from unifi_list_clients)",
             "type": "string"
           },
+          "network_id": {
+            "description": "Network _id (from unifi_list_networks) the fixed IP belongs to. Only used when enabling a fixed IP; when omitted, the network whose subnet contains fixed_ip is used",
+            "type": "string"
+          },
           "use_fixedip": {
             "description": "Enable (true) or disable (false) fixed IP / DHCP reservation for this client",
             "type": "boolean"

@@ -94,6 +94,13 @@ class SetClientIpSettingsInput(BaseModel):
     mac_address: str = Field(description="MAC address of the client (AA:BB:CC:DD:EE:FF)")
     use_fixedip: Optional[bool] = Field(default=None, description="Enable/disable fixed IP (DHCP reservation)")
     fixed_ip: Optional[str] = Field(default=None, description="Static IP to assign (only used when use_fixedip=True)")
+    network_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Network the fixed IP belongs to (_id from unifi_list_networks). Only used when enabling a fixed IP; "
+            "inferred from the network whose subnet contains the IP when omitted"
+        ),
+    )
     local_dns_record_enabled: Optional[bool] = Field(
         default=None, description="Enable/disable local DNS record (UniFi Network 7.2+)"
     )
@@ -101,6 +108,13 @@ class SetClientIpSettingsInput(BaseModel):
         default=None,
         description="Local DNS hostname (only used when local_dns_record_enabled=True)",
     )
+
+    @model_validator(mode="after")
+    def network_id_requires_fixed_ip(self) -> "SetClientIpSettingsInput":
+        enabling = self.use_fixedip is True or (self.use_fixedip is None and self.fixed_ip is not None)
+        if self.network_id is not None and not enabling:
+            raise ValueError("network_id is only used when enabling a fixed IP (use_fixedip=true or fixed_ip)")
+        return self
 
 
 class SetClientFixedApInput(BaseModel):

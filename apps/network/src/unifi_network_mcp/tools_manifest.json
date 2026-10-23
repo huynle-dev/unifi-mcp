@@ -18093,7 +18093,7 @@
         "readOnlyHint": false
       },
       "auth_method": "local_only",
-      "description": "Set fixed IP address and/or local DNS record for a client device.\n\nAllows configuring:\n- Fixed IP: Assign a static IP address to a client (DHCP reservation)\n- Local DNS: Create a local DNS hostname for the client (UniFi Network 7.2+)\n\nEither setting can be enabled/disabled independently.",
+      "description": "Set fixed IP address and/or local DNS record for a client device.\n\nAllows configuring:\n- Fixed IP: Assign a static IP address to a client (DHCP reservation)\n- Local DNS: Create a local DNS hostname for the client (UniFi Network 7.2+)\n\nEither setting can be enabled/disabled independently. A fixed IP is always stored with the\nnetwork it belongs to: pass network_id (from unifi_list_networks) or let it be inferred from the\nnetwork whose subnet contains fixed_ip. The preview shows the resolved network.",
       "name": "unifi_set_client_ip_settings",
       "permission_action": "update",
       "permission_category": "clients",
@@ -18118,6 +18118,10 @@
             },
             "mac_address": {
               "description": "MAC address of the client to configure, in format AA:BB:CC:DD:EE:FF (from unifi_list_clients)",
+              "type": "string"
+            },
+            "network_id": {
+              "description": "Network _id (from unifi_list_networks) the fixed IP belongs to. Only used when enabling a fixed IP; when omitted, the network whose subnet contains fixed_ip is used",
               "type": "string"
             },
             "use_fixedip": {
